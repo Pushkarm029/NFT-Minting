@@ -2,143 +2,204 @@ use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
     metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3, Metadata},
-    token::{burn, mint_to, Burn, Mint, MintTo, Token, TokenAccount},
+    token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
 };
-use mpl_token_metadata::{pda::find_metadata_account, state::DataV2};
-// use solana_program::{pubkey, pubkey::Pubkey};
+use mpl_token_metadata::accounts::MasterEdition as MasterMPL;
+use mpl_token_metadata::accounts::Metadata as MPL;
 
 declare_id!("6aUW8srpkah6n7zaMNABCrRryckV1vkkzQK3D4nG6rYL");
 
-// const MAX_HEALTH: u64 = 1000;
-// const MAX_DAMAGE: u64 = 500;
-// 
+// overall fns list: {v1} : normal
+// create mint
+// transfer nft
+// burn
 
-// TODO: later add pubkey here
-const ADMIN_PUBKEY: Pubkey = pubkey!("6aUW8srpkah6n7zaMNABCrRryckV1vkkzQK3D4nG6rYL");
-
-    // overall fns list: {v1} : normal
-    // create mint
-    // transfer nft
-    // burn
-
-    // v2
-    // gamefied
-    // fight -> win -> get nft, lose -> loss nft
+// v2
+// gamefied
+// fight -> win -> get nft, lose -> loss nft
 
 #[program]
 pub mod nft {
+    use mpl_token_metadata::types::DataV2;
+
     use super::*;
-    
-    // pub fn mint_nft(
-    //     ctx: Context<MintNFT>
-    // ) -> Result<()> {
-    //     Ok(())
-    // }
+
+    pub fn mint_nft(
+        ctx: Context<CreateNFT>,
+        name: String,
+        symbol: String,
+        uri: String,
+    ) -> Result<()> {
+        let data_v2 = DataV2 {
+            name,
+            symbol,
+            uri,
+            seller_fee_basis_points: 0,
+            creators: None,
+            collection: None,
+            uses: None,
+        };
+
+        let seeds = b"mint";
+        let bump = ctx.bumps.token_mint;
+        let signer: &[&[&[u8]]] = &[&[seeds, &[bump]]];
+
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_metadata_program.to_account_info(),
+            CreateMetadataAccountsV3 {
+                metadata: ctx.accounts.metadata_account.to_account_info(),
+                mint: ctx.accounts.token_mint.to_account_info(),
+                mint_authority: ctx.accounts.token_mint.to_account_info(),
+                payer: ctx.accounts.admin.to_account_info(),
+                update_authority: ctx.accounts.token_mint.to_account_info(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+                rent: ctx.accounts.rent.to_account_info(),
+            },
+            signer,
+        );
+
+        create_metadata_accounts_v3(cpi_ctx, data_v2, true, true, None)?;
+
+        Ok(())
+    }
+
+    pub fn burn_nft(ctx: Context<BurnNFT>) -> Result<()> {
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Burn {
+                mint: ctx.accounts.token_mint.to_account_info(),
+                from: ctx.accounts.nft_token_account.to_account_info(),
+                authority: ctx.accounts.admin.to_account_info(),
+            },
+        );
+
+        burn(cpi_ctx, 1)?;
+        Ok(())
+    }
+
+    pub fn transfer_nft(ctx: Context<TransferNFT>) -> Result<()> {
+        let cpi_context = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.sender_nft_token_account.to_account_info(),
+                to: ctx.accounts.recipient_nft_token_account.to_account_info(),
+                authority: ctx.accounts.sender.to_account_info(),
+            },
+        );
+        transfer(cpi_context, 1)?;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
-pub struct CreateMint<'info> {
+pub struct CreateNFT<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
-
     #[account(
         init,
         seeds=[b"mint"],
         payer=admin,
         bump,
-        mint::decimals = 9,
+        mint::decimals = 0,
         mint::authority = token_mint,
     )]
     pub token_mint: Account<'info, Mint>,
-
-    ///CHECK: Using "address" constraint to validate metadata account address
+    #[account(
+        init_if_needed,
+        payer = admin,
+        associated_token::mint = token_mint,
+        associated_token::authority = admin
+    )]
+    pub associated_token_account: Account<'info, TokenAccount>,
     #[account(
         mut,
-        address=find_metadata_account(&token_mint.key()).0
+        // can be a wrong import: compare code of this vs v2 find_pda_address
+        address=MPL::find_pda(&token_mint.key()).0
     )]
     pub metadata_account: UncheckedAccount<'info>,
-
+    #[account(
+        mut,
+        address=MasterMPL::find_pda(&token_mint.key()).0
+    )]
+    pub master_edition_account: AccountInfo<'info>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_metadata_program: Program<'info, Metadata>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
-// #[program]
-// pub mod nft_mint {
-//     use super::*;
+#[derive(Accounts)]
+pub struct BurnNFT<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(
+        mut,
+        address = token_mint.key(),
+        constraint = token_mint.supply == 1 @ ErrorCode::InvalidMintSupply,
+    )]
+    pub token_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        associated_token::mint = token_mint,
+        associated_token::authority = admin,
+        constraint = nft_token_account.amount == 1 @ ErrorCode::InvalidTokenAmount,
+    )]
+    pub nft_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        address = MPL::find_pda(&token_mint.key()).0,
+        // owner = mpl_token_metadata::ID
+    )]
+    pub metadata_account: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        address = MasterMPL::find_pda(&token_mint.key()).0,
+        // owner = mpl_token_metadata::ID
+    )]
+    pub master_edition_account: AccountInfo<'info>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_metadata_program: Program<'info, Metadata>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
 
-//     pub fn respawn(ctx: Context<Intialize>) -> Result<()> {
-//         // Reset enemy boss to max health
-//         ctx.accounts.enemy_boss.health = MAX_HEALTH;
-//         Ok(())
-//     }
+#[derive(Accounts)]
+pub struct TransferNFT<'info> {
+    #[account(mut)]
+    pub sender: Signer<'info>,
+    #[account(
+        mut,
+        associated_token::mint = token_mint,
+        associated_token::authority = sender,
+        constraint = sender_nft_token_account.amount == 1 @ ErrorCode::InvalidTokenAmount,
+    )]
+    pub sender_nft_token_account: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = sender,
+        associated_token::mint = token_mint,
+        associated_token::authority = recipient,
+    )]
+    pub recipient_nft_token_account: Account<'info, TokenAccount>,
+    pub recipient: AccountInfo<'info>,
+    #[account(
+        mut,
+        address = token_mint.key(),
+        constraint = token_mint.supply == 1 @ ErrorCode::InvalidMintSupply,
+    )]
+    pub token_mint: Account<'info, Mint>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
 
-//     pub fn attack(ctx: Context<Attack>) -> Result<()> {
-//         // Check if enemy boss has enough health
-//         if ctx.accounts.enemy_boss.health == 0 {
-//             return err!(ErrorCode::NotEnoughHealth);
-//         }
-
-//         // Get current slot
-//         let slot = Clock::get()?.slot;
-//         // Generate pseudo-random number using XORShift with the current slot as seed
-//         let xorshift_output = xorshift64(slot);
-//         // Calculate random damage
-//         let random_damage = xorshift_output % (MAX_DAMAGE);
-//         msg!("Random Damage: {}", random_damage);
-
-//         // Subtract health from enemy boss, min health is 0
-//         ctx.accounts.enemy_boss.health =
-//             ctx.accounts.enemy_boss.health.saturating_sub(random_damage);
-//         msg!("Enemy Boss Health: {}", ctx.accounts.enemy_boss.health);
-
-//         Ok(())
-//     }
-// }
-
-// #[derive(Accounts)]
-// pub struct Intialize<'info> {
-//     #[account(mut)]
-//     pub player: Signer<'info>,
-//     #[account(
-//         init_if_needed,
-//         payer = player,
-//         space = 8 + 8,
-//         seeds = [b"boss"],
-//         bump,
-//     )]
-//     pub enemy_boss: Account<'info, EnemyBoss>,
-//     pub system_program: Program<'info, System>,
-// }
-
-// #[derive(Accounts)]
-// pub struct Attack<'info> {
-//     #[account(mut)]
-//     pub player: Signer<'info>,
-//     #[account(
-//         mut,
-//         seeds = [b"boss"],
-//         bump,
-//     )]
-//     pub enemy_boss: Account<'info, EnemyBoss>,
-// }
-
-// #[account]
-// pub struct EnemyBoss {
-//     pub health: u64,
-// }
-
-// #[error_code]
-// pub enum ErrorCode {
-//     #[msg("Boss at 0 health; respawn to attack.")]
-//     NotEnoughHealth,
-// }
-
-// pub fn xorshift64(seed: u64) -> u64 {
-//     let mut x = seed;
-//     x ^= x << 13;
-//     x ^= x >> 7;
-//     x ^= x << 17;
-//     x
-// }
+#[error_code]
+pub enum ErrorCode {
+    #[msg("The mint supply must be exactly 1.")]
+    InvalidMintSupply,
+    #[msg("The token account must hold exactly 1 token.")]
+    InvalidTokenAmount,
+}

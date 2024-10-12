@@ -4,22 +4,12 @@ use anchor_spl::{
     metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3, Metadata},
     token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
 };
-use mpl_token_metadata::accounts::MasterEdition as MasterMPL;
-use mpl_token_metadata::accounts::Metadata as MPL;
+use mpl_token_metadata::accounts::{Metadata as MPL, MasterEdition as MasterMPL};
 
-declare_id!("6aUW8srpkah6n7zaMNABCrRryckV1vkkzQK3D4nG6rYL");
-
-// overall fns list: {v1} : normal
-// create mint
-// transfer nft
-// burn
-
-// v2
-// gamefied
-// fight -> win -> get nft, lose -> loss nft
+declare_id!("3qi59gdvUUTtFZaFAGebD3uiMQPm7vx773FqjTRgcSgh");
 
 #[program]
-pub mod nft {
+pub mod solana_nft_mint {
     use mpl_token_metadata::types::DataV2;
 
     use super::*;
@@ -111,17 +101,19 @@ pub struct CreateNFT<'info> {
         associated_token::authority = admin
     )]
     pub associated_token_account: Account<'info, TokenAccount>,
+    /// CHECK: This account is checked in the CPI to token-metadata program
     #[account(
         mut,
         // can be a wrong import: compare code of this vs v2 find_pda_address
         address=MPL::find_pda(&token_mint.key()).0
     )]
     pub metadata_account: UncheckedAccount<'info>,
+    /// CHECK: This account is checked in the CPI to token-metadata program
     #[account(
         mut,
         address=MasterMPL::find_pda(&token_mint.key()).0
     )]
-    pub master_edition_account: AccountInfo<'info>,
+    pub master_edition_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_metadata_program: Program<'info, Metadata>,
@@ -135,7 +127,6 @@ pub struct BurnNFT<'info> {
     pub admin: Signer<'info>,
     #[account(
         mut,
-        address = token_mint.key(),
         constraint = token_mint.supply == 1 @ ErrorCode::InvalidMintSupply,
     )]
     pub token_mint: Account<'info, Mint>,
@@ -146,18 +137,18 @@ pub struct BurnNFT<'info> {
         constraint = nft_token_account.amount == 1 @ ErrorCode::InvalidTokenAmount,
     )]
     pub nft_token_account: Account<'info, TokenAccount>,
+    /// CHECK: This account is checked in the CPI to token-metadata program
     #[account(
         mut,
         address = MPL::find_pda(&token_mint.key()).0,
-        // owner = mpl_token_metadata::ID
     )]
     pub metadata_account: UncheckedAccount<'info>,
+    /// CHECK: This account is checked in the CPI to token-metadata program
     #[account(
         mut,
         address = MasterMPL::find_pda(&token_mint.key()).0,
-        // owner = mpl_token_metadata::ID
     )]
-    pub master_edition_account: AccountInfo<'info>,
+    pub master_edition_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_metadata_program: Program<'info, Metadata>,
@@ -169,6 +160,11 @@ pub struct BurnNFT<'info> {
 pub struct TransferNFT<'info> {
     #[account(mut)]
     pub sender: Signer<'info>,
+    #[account(
+        mut,
+        constraint = token_mint.supply == 1 @ ErrorCode::InvalidMintSupply,
+    )]
+    pub token_mint: Account<'info, Mint>,
     #[account(
         mut,
         associated_token::mint = token_mint,
@@ -183,13 +179,8 @@ pub struct TransferNFT<'info> {
         associated_token::authority = recipient,
     )]
     pub recipient_nft_token_account: Account<'info, TokenAccount>,
+    /// CHECK: This is the recipient of the NFT
     pub recipient: AccountInfo<'info>,
-    #[account(
-        mut,
-        address = token_mint.key(),
-        constraint = token_mint.supply == 1 @ ErrorCode::InvalidMintSupply,
-    )]
-    pub token_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
